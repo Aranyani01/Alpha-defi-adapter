@@ -12,8 +12,7 @@ pragma experimental ABIEncoderV2;
 import { SafeMath } from "@openzeppelin/contracts/math/SafeMath.sol";
 
 //  interfaces
-import { IHarvestDeposit } from "../interfaces/harvest.finance/IHarvestDeposit.sol";
-import { IHarvestFarm } from "../interfaces/harvest.finance/IHarvestFarm.sol";
+import { IBank } from "../interfaces/alpha.finance/IBank.sol";
 import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IAdapter } from "../interfaces/opty/defiAdapters/IAdapter.sol";
 import { IAdapterHarvestReward } from "../interfaces/opty/defiAdapters/IAdapterHarvestReward.sol";
@@ -26,7 +25,7 @@ import { IUniswapV2Router02 } from "@uniswap/v2-periphery/contracts/interfaces/I
  * @dev Abstraction layer to harvest finance's pools
  */
 
-contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaking {
+contract HarvestFinanceAdapter is IAdapter, IBank, IAdapterBorrow {
     using SafeMath for uint256;
 
     /** @notice Maps liquidityPool to staking vault */
@@ -69,8 +68,8 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
     address public constant F_USDN_THREE_CRV_STAKE_VAULT = address(0xef4Da1CE3f487DA2Ed0BE23173F76274E0D47579);
     address public constant F_YDAI_YUSDC_YUSDT_YBUSD_STAKE_VAULT = address(0x093C2ae5E6F3D2A897459aa24551289D462449AD);
 
-    /** @notice Harvest.finance's reward token address */
-    address public constant rewardToken = address(0xa0246c9032bC3A600820415aE600c6388619A14D);
+    /** @notice Alpha.finance's reward token address */
+    address public constant rewardToken = address(0x56d8264b5899c07f6c2f3a326180df424a5c761d);
 
     constructor() public {
         liquidityPoolToStakingVault[TBTC_SBTC_CRV_DEPOSIT_POOL] = TBTC_SBTC_CRV_STAKE_VAULT;
@@ -124,11 +123,11 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
         returns (address[] memory _underlyingTokens)
     {
         _underlyingTokens = new address[](1);
-        _underlyingTokens[0] = IHarvestDeposit(_liquidityPool).underlying();
+        _underlyingTokens[0] = IBank.BorrowBalanceStored(_liquidityPool).underlying();
     }
 
     /**
-     * @inheritdoc IAdapter
+     * @inheritdoc IAdapter with IBank getBankInfo syntax
      */
     function calculateAmountInLPToken(
         address,
@@ -136,8 +135,8 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
         uint256 _depositAmount
     ) public view override returns (uint256) {
         return
-            _depositAmount.mul(10**IHarvestDeposit(_liquidityPool).decimals()).div(
-                IHarvestDeposit(_liquidityPool).getPricePerFullShare()
+            _depositAmount.mul(10**IBank.stake(_liquidityPool).decimals()).div(
+                IBank.getBankInfo(_liquidityPool).totalShare()
             );
     }
 
@@ -170,7 +169,7 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
     }
 
     /**
-     * @inheritdoc IAdapterHarvestReward
+     * @inheritdoc IBank.sol
      */
     function getClaimRewardTokenCode(address payable, address _liquidityPool)
         public
@@ -202,71 +201,18 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
         return true;
     }
 
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getStakeAllCodes(
+
+
+    function getRepayAndWithdrawAllCodes(
         address payable _vault,
         address[] memory _underlyingTokens,
-        address _liquidityPool
-    ) public view override returns (bytes[] memory _codes) {
-        uint256 _depositAmount = getLiquidityPoolTokenBalance(_vault, _underlyingTokens[0], _liquidityPool);
-        return getStakeSomeCodes(_liquidityPool, _depositAmount);
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getUnstakeAllCodes(address payable _vault, address _liquidityPool)
-        public
-        view
-        override
-        returns (bytes[] memory _codes)
-    {
-        uint256 _redeemAmount = getLiquidityPoolTokenBalanceStake(_vault, _liquidityPool);
-        return getUnstakeSomeCodes(_liquidityPool, _redeemAmount);
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function calculateRedeemableLPTokenAmountStake(
-        address payable _vault,
-        address _underlyingToken,
         address _liquidityPool,
-        uint256 _redeemAmount
-    ) public view override returns (uint256 _amount) {
-        address _stakingVault = liquidityPoolToStakingVault[_liquidityPool];
-        uint256 _liquidityPoolTokenBalance = IHarvestFarm(_stakingVault).balanceOf(_vault);
-        uint256 _balanceInToken = getAllAmountInTokenStake(_vault, _underlyingToken, _liquidityPool);
-        // can have unintentional rounding errors
-        _amount = (_liquidityPoolTokenBalance.mul(_redeemAmount)).div(_balanceInToken).add(1);
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function isRedeemableAmountSufficientStake(
-        address payable _vault,
-        address _underlyingToken,
-        address _liquidityPool,
-        uint256 _redeemAmount
-    ) public view override returns (bool) {
-        uint256 _balanceInTokenStake = getAllAmountInTokenStake(_vault, _underlyingToken, _liquidityPool);
+        address _outputToken
+       ) public view override returns (bool) {
+        uint256 _balanceInTokenStake = Ibank.takeCollateral(_vault, _underlyingToken, _liquidityPool);
         return _balanceInTokenStake >= _redeemAmount;
     }
 
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getUnstakeAndWithdrawAllCodes(
-        address payable _vault,
-        address[] memory _underlyingTokens,
-        address _liquidityPool
-    ) public view override returns (bytes[] memory _codes) {
-        uint256 _unstakeAmount = getLiquidityPoolTokenBalanceStake(_vault, _liquidityPool);
-        return getUnstakeAndWithdrawSomeCodes(_vault, _underlyingTokens, _liquidityPool, _unstakeAmount);
-    }
 
     /**
      * @inheritdoc IAdapter
@@ -310,10 +256,10 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
     }
 
     /**
-     * @inheritdoc IAdapter
+     * @inheritdoc IAdapter with Alpha Homora IBank function
      */
     function getPoolValue(address _liquidityPool, address) public view override returns (uint256) {
-        return IHarvestDeposit(_liquidityPool).underlyingBalanceWithInvestment();
+        return IBank.getBankInfo(_liquidityPool).reserve();
     }
 
     /**
@@ -360,152 +306,38 @@ contract HarvestFinanceAdapter is IAdapter, IAdapterHarvestReward, IAdapterStaki
     ) public view override returns (uint256) {
         if (_liquidityPoolTokenAmount > 0) {
             _liquidityPoolTokenAmount = _liquidityPoolTokenAmount
-                .mul(IHarvestDeposit(_liquidityPool).getPricePerFullShare())
-                .div(10**IHarvestDeposit(_liquidityPool).decimals());
+                .mul(IBank.getBankInfo(_liquidityPool).totalShare())
+                .div(10**IBank.getPositionInfo(_liquidityPool).decimals());
         }
         return _liquidityPoolTokenAmount;
     }
 
-    /**
-     * @inheritdoc IAdapter
-     */
-    function getRewardToken(address) public view override returns (address) {
-        return rewardToken;
-    }
+    
 
-    /**
-     * @inheritdoc IAdapterHarvestReward
-     */
-    function getUnclaimedRewardTokenAmount(
-        address payable _vault,
-        address _liquidityPool,
-        address
-    ) public view override returns (uint256) {
-        return IHarvestFarm(liquidityPoolToStakingVault[_liquidityPool]).earned(_vault);
-    }
-
-    /**
-     * @inheritdoc IAdapterHarvestReward
-     */
-    function getHarvestSomeCodes(
-        address payable _vault,
-        address _underlyingToken,
-        address _liquidityPool,
-        uint256 _rewardTokenAmount
-    ) public view override returns (bytes[] memory _codes) {
-        return _getHarvestCodes(_vault, getRewardToken(_liquidityPool), _underlyingToken, _rewardTokenAmount);
-    }
-
-    /* solhint-disable no-empty-blocks */
-
-    /**
-     * @inheritdoc IAdapterHarvestReward
-     */
-    function getAddLiquidityCodes(address payable, address) public view override returns (bytes[] memory) {}
-
-    /* solhint-enable no-empty-blocks */
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getStakeSomeCodes(address _liquidityPool, uint256 _shares)
-        public
-        view
-        override
-        returns (bytes[] memory _codes)
-    {
-        if (_shares > 0) {
-            address _stakingVault = liquidityPoolToStakingVault[_liquidityPool];
-            address _liquidityPoolToken = getLiquidityPoolToken(address(0), _liquidityPool);
-            _codes = new bytes[](3);
-            _codes[0] = abi.encode(
-                _liquidityPoolToken,
-                abi.encodeWithSignature("approve(address,uint256)", _stakingVault, uint256(0))
-            );
-            _codes[1] = abi.encode(
-                _liquidityPoolToken,
-                abi.encodeWithSignature("approve(address,uint256)", _stakingVault, _shares)
-            );
-            _codes[2] = abi.encode(_stakingVault, abi.encodeWithSignature("stake(uint256)", _shares));
-        }
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getUnstakeSomeCodes(address _liquidityPool, uint256 _shares)
-        public
-        view
-        override
-        returns (bytes[] memory _codes)
-    {
-        if (_shares > 0) {
-            address _stakingVault = liquidityPoolToStakingVault[_liquidityPool];
-            _codes = new bytes[](1);
-            _codes[0] = abi.encode(_stakingVault, abi.encodeWithSignature("withdraw(uint256)", _shares));
-        }
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getAllAmountInTokenStake(
-        address payable _vault,
-        address _underlyingToken,
-        address _liquidityPool
-    ) public view override returns (uint256) {
-        address _stakingVault = liquidityPoolToStakingVault[_liquidityPool];
-        uint256 b = IHarvestFarm(_stakingVault).balanceOf(_vault);
-        if (b > 0) {
-            b = b.mul(IHarvestDeposit(_liquidityPool).getPricePerFullShare()).div(
-                10**IHarvestDeposit(_liquidityPool).decimals()
-            );
-        }
-        uint256 _unclaimedReward = getUnclaimedRewardTokenAmount(_vault, _liquidityPool, _underlyingToken);
-        if (_unclaimedReward > 0) {
-            b = b.add(_getRewardBalanceInUnderlyingTokens(rewardToken, _underlyingToken, _unclaimedReward));
-        }
-        return b;
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getLiquidityPoolTokenBalanceStake(address payable _vault, address _liquidityPool)
-        public
-        view
-        override
-        returns (uint256)
-    {
-        address _stakingVault = liquidityPoolToStakingVault[_liquidityPool];
-        return IHarvestFarm(_stakingVault).balanceOf(_vault);
-    }
-
-    /**
-     * @inheritdoc IAdapterStaking
-     */
-    function getUnstakeAndWithdrawSomeCodes(
+    function getBorrowAllCodes(
         address payable _vault,
         address[] memory _underlyingTokens,
         address _liquidityPool,
-        uint256 _redeemAmount
-    ) public view override returns (bytes[] memory _codes) {
-        if (_redeemAmount > 0) {
-            _codes = new bytes[](2);
-            _codes[0] = getUnstakeSomeCodes(_liquidityPool, _redeemAmount)[0];
-            _codes[1] = getWithdrawSomeCodes(_vault, _underlyingTokens, _liquidityPool, _redeemAmount)[0];
-        }
-    }
+        address _outputToken
+    ) public view override returns (bytes[] memory _codes);
+        if (_liquidityPoolTokenAmount > 0) {
+            _liquidityPoolTokenAmount = _liquidityPoolTokenAmount
+                .mul(IBank.borrow(_underlyingTokens).totalShare())
+                .div(10**IBank.getPositionInfo(_liquidityPool).decimals());
+                
+)
+
+   
 
     /**
-     * @dev Get the codes for harvesting the tokens using uniswap router
+     * @dev Get the codes for Position of the tokens using uniswap router
      * @param _vault Vault contract address
      * @param _rewardToken Reward token address
      * @param _underlyingToken Token address acting as underlying Asset for the vault contract
      * @param _rewardTokenAmount reward token amount to harvest
      * @return _codes List of harvest codes for harvesting reward tokens
      */
-    function _getHarvestCodes(
+    function _getPositionCodes(
         address payable _vault,
         address _rewardToken,
         address _underlyingToken,
